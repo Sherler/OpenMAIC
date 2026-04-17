@@ -82,3 +82,54 @@ export async function persistClassroom(
     url: `${baseUrl}/classroom/${data.id}`,
   };
 }
+
+export interface ClassroomListItem {
+  id: string;
+  name: string;
+  description?: string;
+  createdAt: string;
+  hasManifest: boolean;
+}
+
+export async function listClassrooms(): Promise<ClassroomListItem[]> {
+  await ensureClassroomsDir();
+  const entries = await fs.readdir(CLASSROOMS_DIR, { withFileTypes: true });
+  const items: ClassroomListItem[] = [];
+
+  for (const entry of entries) {
+    // Match {id}.json files at top level
+    if (entry.isFile() && entry.name.endsWith('.json')) {
+      const id = entry.name.replace(/\.json$/, '');
+      if (!isValidClassroomId(id)) continue;
+
+      try {
+        const data = await readClassroom(id);
+        if (!data) continue;
+
+        // Check if manifest exists
+        const manifestPath = path.join(CLASSROOMS_DIR, id, 'manifest.json');
+        let hasManifest = false;
+        try {
+          await fs.access(manifestPath);
+          hasManifest = true;
+        } catch {
+          // no manifest
+        }
+
+        items.push({
+          id: data.id,
+          name: data.stage.name,
+          description: data.stage.description,
+          createdAt: data.createdAt,
+          hasManifest,
+        });
+      } catch {
+        // skip corrupted files
+      }
+    }
+  }
+
+  // Sort by creation date, newest first
+  items.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return items;
+}

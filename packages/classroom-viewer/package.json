@@ -1,0 +1,34 @@
+{
+  "name": "@openmaic/classroom-viewer",
+  "version": "0.1.0",
+  "description": "Standalone classroom viewer (consumer) for OpenMAIC - displays generated classroom resources given a resource ID",
+  "license": "AGPL-3.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./api-client": {
+      "types": "./dist/api-client.d.ts",
+      "import": "./dist/api-client.js"
+    },
+    "./types": {
+      "types": "./dist/types.d.ts",
+      "import": "./dist/types.js"
+    }
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "src"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch"
+  },
+  "devDependencies": {
+    "typescript": "^5.0.0"
+  }
+}

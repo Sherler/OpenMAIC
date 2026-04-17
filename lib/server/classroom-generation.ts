@@ -21,6 +21,7 @@ import { resolveModel } from '@/lib/server/resolve-model';
 import { buildSearchQuery } from '@/lib/server/search-query-builder';
 import { searchWithTavily, formatSearchResultsAsContext } from '@/lib/web-search/tavily';
 import { persistClassroom } from '@/lib/server/classroom-storage';
+import { writeClassroomManifest } from '@/lib/server/classroom-manifest';
 import {
   generateMediaForClassroom,
   replaceMediaPlaceholders,
@@ -451,6 +452,22 @@ export async function generateClassroom(
     },
     options.baseUrl,
   );
+
+  // Write self-contained manifest for the viewer (consumer) package
+  try {
+    const agentConfigs = stage.generatedAgentConfigs?.map((a) => ({
+      name: a.name,
+      role: a.role,
+      persona: a.persona,
+      avatar: a.avatar,
+      color: a.color,
+      priority: a.priority,
+    }));
+    await writeClassroomManifest(stageId, stage, scenes, agentConfigs);
+    log.info(`Manifest written for classroom ${stageId}`);
+  } catch (err) {
+    log.warn('Manifest write failed, continuing:', err);
+  }
 
   log.info(`Classroom persisted: ${persisted.id}, URL: ${persisted.url}`);
 

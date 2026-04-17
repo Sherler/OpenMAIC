@@ -42,8 +42,10 @@ import { VisuallyHidden } from 'radix-ui';
  */
 export function Stage({
   onRetryOutline,
+  readOnly,
 }: {
   onRetryOutline?: (outlineId: string) => Promise<void>;
+  readOnly?: boolean;
 }) {
   const { t } = useI18n();
   const { mode, getCurrentScene, scenes, currentSceneId, setCurrentSceneId, generatingOutlines } =

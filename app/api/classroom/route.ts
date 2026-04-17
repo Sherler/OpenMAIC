@@ -7,6 +7,7 @@ import {
   persistClassroom,
   readClassroom,
 } from '@/lib/server/classroom-storage';
+import { writeClassroomManifest } from '@/lib/server/classroom-manifest';
 import { createLogger } from '@/lib/logger';
 
 const log = createLogger('Classroom API');
@@ -32,6 +33,11 @@ export async function POST(request: NextRequest) {
     const baseUrl = buildRequestOrigin(request);
 
     const persisted = await persistClassroom({ id, stage: { ...stage, id }, scenes }, baseUrl);
+
+    // Write manifest for viewer (consumer) package — non-blocking
+    writeClassroomManifest(id, { ...stage, id }, scenes).catch((err) => {
+      log.warn(`Manifest write failed for ${id}:`, err);
+    });
 
     return apiSuccess({ id: persisted.id, url: persisted.url }, 201);
   } catch (error) {
