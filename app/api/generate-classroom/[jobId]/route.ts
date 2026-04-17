@@ -38,6 +38,7 @@ export async function GET(req: NextRequest, context: { params: Promise<{ jobId: 
       pollIntervalMs: 5000,
       scenesGenerated: job.scenesGenerated,
       totalScenes: job.totalScenes,
+      outlineTitles: job.outlineTitles,
       result: job.result,
       error: job.error,
       done: job.status === 'succeeded' || job.status === 'failed',

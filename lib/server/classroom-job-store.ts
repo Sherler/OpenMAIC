@@ -32,6 +32,8 @@ export interface ClassroomGenerationJob {
   };
   scenesGenerated: number;
   totalScenes?: number;
+  /** Scene outline titles, populated after outline generation */
+  outlineTitles?: string[];
   result?: {
     classroomId: string;
     url: string;
@@ -181,14 +183,18 @@ export async function updateClassroomGenerationJobProgress(
   jobId: string,
   progress: ClassroomGenerationProgress,
 ): Promise<ClassroomGenerationJob> {
-  return updateClassroomGenerationJob(jobId, {
+  const patch: Partial<ClassroomGenerationJob> = {
     status: 'running',
     step: progress.step,
     progress: progress.progress,
     message: progress.message,
     scenesGenerated: progress.scenesGenerated,
     totalScenes: progress.totalScenes,
-  });
+  };
+  if (progress.outlineTitles) {
+    patch.outlineTitles = progress.outlineTitles;
+  }
+  return updateClassroomGenerationJob(jobId, patch);
 }
 
 export async function markClassroomGenerationJobSucceeded(

@@ -19,7 +19,9 @@ import {
   BotOff,
   ChevronUp,
   Upload,
+  Layers,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { LanguageSwitcher } from '@/components/language-switcher';
 import { createLogger } from '@/lib/logger';
@@ -403,6 +405,23 @@ function HomePage() {
             </div>
           )}
         </div>
+
+        <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
+
+        {/* Batch Generate Link */}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Link
+              href="/batch-generate"
+              className="p-2 rounded-full text-gray-400 dark:text-gray-500 hover:bg-white dark:hover:bg-gray-700 hover:text-gray-800 dark:hover:text-gray-200 hover:shadow-sm transition-all"
+            >
+              <Layers className="w-4 h-4" />
+            </Link>
+          </TooltipTrigger>
+          <TooltipContent side="bottom">
+            <p>批量生成</p>
+          </TooltipContent>
+        </Tooltip>
 
         <div className="w-[1px] h-4 bg-gray-200 dark:bg-gray-700" />
 

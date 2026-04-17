@@ -59,6 +59,8 @@ export interface ClassroomGenerationProgress {
   message: string;
   scenesGenerated: number;
   totalScenes?: number;
+  /** Outline titles — sent once after outlines are generated */
+  outlineTitles?: string[];
 }
 
 export interface GenerateClassroomResult {
@@ -298,6 +300,7 @@ export async function generateClassroom(
     message: `Generated ${outlines.length} scene outlines`,
     scenesGenerated: 0,
     totalScenes: outlines.length,
+    outlineTitles: outlines.map((o) => o.title),
   });
 
   // Resolve agents based on agentMode — now AFTER outlines so we can use languageDirective
