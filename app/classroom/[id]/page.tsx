@@ -10,6 +10,7 @@ import { useSceneGenerator } from '@/lib/hooks/use-scene-generator';
 import { useMediaGenerationStore } from '@/lib/store/media-generation';
 import { useWhiteboardHistoryStore } from '@/lib/store/whiteboard-history';
 import { createLogger } from '@/lib/logger';
+import { syncClassroomToServer } from '@/lib/utils/classroom-server-sync';
 import { MediaStageProvider } from '@/lib/contexts/media-stage-context';
 import { generateMediaForOutlines } from '@/lib/media/media-orchestrator';
 
@@ -29,6 +30,11 @@ export default function ClassroomDetailPage() {
   const { generateRemaining, retrySingleOutline, stop } = useSceneGenerator({
     onComplete: () => {
       log.info('[Classroom] All scenes generated');
+      // Sync the complete classroom to server-side storage
+      const { stage, scenes } = useStageStore.getState();
+      if (stage) {
+        syncClassroomToServer(stage, scenes).catch(() => {});
+      }
     },
   });
 
@@ -174,6 +180,11 @@ export default function ClassroomDetailPage() {
       generateMediaForOutlines(outlines, stage.id).catch((err) => {
         log.warn('[Classroom] Media generation resume error:', err);
       });
+      // Sync completed classroom to server-side storage
+      syncClassroomToServer(stage, scenes).catch(() => {});
+    } else if (stage && scenes.length > 0) {
+      // Classroom fully loaded with all scenes, no outlines — sync to server
+      syncClassroomToServer(stage, scenes).catch(() => {});
     }
   }, [loading, error, generateRemaining]);
 
