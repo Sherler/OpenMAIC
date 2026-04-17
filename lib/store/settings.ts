@@ -1140,11 +1140,13 @@ export const useSettingsStore = create<SettingsState>()(
                 if (models?.length) recoveredVideoModel = models[0].id;
               }
 
+              const llmModels =
+                newProvidersConfig[validLLMProvider as ProviderId]?.models ?? [];
               const validLLMModel = validLLMProvider
-                ? validateModel(
-                    state.modelId,
-                    newProvidersConfig[validLLMProvider as ProviderId]?.models ?? [],
-                  )
+                ? validateModel(state.modelId, llmModels) ||
+                  // validateModel('', ...) returns '' — fallback to first model when modelId is empty
+                  llmModels[0]?.id ||
+                  ''
                 : '';
               const imageModels =
                 IMAGE_PROVIDERS[validImageProvider as ImageProviderId]?.models ?? [];
