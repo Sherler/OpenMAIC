@@ -3,11 +3,13 @@
 import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { useI18n } from '@/lib/hooks/use-i18n';
+import type { CourseTagDefinition } from '@/lib/constants/course-tags';
 
 interface ClassroomItem {
   id: string;
   name: string;
   description?: string;
+  courseTags: CourseTagDefinition[];
   createdAt: string;
   hasManifest: boolean;
 }
@@ -79,6 +81,18 @@ export default function ViewerIndexPage() {
                     {classroom.description && (
                       <p className="text-sm text-muted-foreground mt-1 line-clamp-2">
                         {classroom.description}
+                      </p>
+                    )}
+                    {classroom.courseTags.length > 0 && (
+                      <p className="mt-2">
+                        {classroom.courseTags.map((tag) => (
+                          <span
+                            key={tag.id}
+                            className="mr-2 text-xs px-2 py-1 rounded-full bg-blue-100 dark:bg-blue-900/30 text-blue-700 dark:text-blue-300"
+                          >
+                            {tag.tag_name}
+                          </span>
+                        ))}
                       </p>
                     )}
                     <p className="text-xs text-muted-foreground mt-2">

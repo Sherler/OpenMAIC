@@ -2,6 +2,7 @@
 import type { Slide } from '@/lib/types/slides';
 import type { Action } from '@/lib/types/action';
 import type { PBLProjectConfig } from '@/lib/pbl/types';
+import type { CourseTagId } from '@/lib/constants/course-tags';
 
 export type SceneType = 'slide' | 'quiz' | 'interactive' | 'pbl';
 
@@ -16,6 +17,7 @@ export interface Stage {
   id: string;
   name: string;
   description?: string;
+  courseTagIds?: CourseTagId[];
   createdAt: number;
   updatedAt: number;
   // Stage metadata
@@ -39,6 +41,7 @@ export interface Stage {
     avatar: string;
     color: string;
     priority: number;
+    voiceConfig?: { providerId: string; modelId?: string; voiceId: string };
   }>;
 }
 

@@ -72,6 +72,7 @@ export function useExportClassroom() {
         avatar: a.avatar,
         color: a.color,
         priority: a.priority,
+        ...(a.voiceConfig ? { voiceConfig: a.voiceConfig } : {}),
       }));
 
       // Also include generatedAgentConfigs from stage if agents not in DB
@@ -84,6 +85,7 @@ export function useExportClassroom() {
             avatar: a.avatar,
             color: a.color,
             priority: a.priority,
+            ...(a.voiceConfig ? { voiceConfig: a.voiceConfig } : {}),
           });
         }
       }

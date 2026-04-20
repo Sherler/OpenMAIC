@@ -20,27 +20,67 @@ import { resolveWebSearchApiKey } from '@/lib/server/provider-config';
 import { resolveModel } from '@/lib/server/resolve-model';
 import { buildSearchQuery } from '@/lib/server/search-query-builder';
 import { searchWithTavily, formatSearchResultsAsContext } from '@/lib/web-search/tavily';
-import { persistClassroom } from '@/lib/server/classroom-storage';
+import { persistClassroom, hasCancelSentinel } from '@/lib/server/classroom-storage';
 import { writeClassroomManifest } from '@/lib/server/classroom-manifest';
 import {
   generateMediaForClassroom,
   replaceMediaPlaceholders,
   generateTTSForClassroom,
 } from '@/lib/server/classroom-media-generation';
-import type { UserRequirements } from '@/lib/types/generation';
+import {
+  createCheckpoint,
+  checkpointSceneContent,
+  checkpointSceneActions,
+  checkpointSceneComplete,
+  checkpointSceneSkipped,
+  checkpointSearchResult,
+  checkpointLLMCall,
+  readCheckpoint,
+  writeCheckpoint,
+  type GenerationCheckpoint,
+} from '@/lib/server/classroom-checkpoint';
+import type { UserRequirements, SceneOutline } from '@/lib/types/generation';
 import type { Scene, Stage } from '@/lib/types/stage';
 import { AGENT_COLOR_PALETTE, AGENT_DEFAULT_AVATARS } from '@/lib/constants/agent-defaults';
+import type { CourseTagId } from '@/lib/constants/course-tags';
 
 const log = createLogger('Classroom');
 
+export interface ClassroomVoiceConfig {
+  providerId: string;
+  modelId?: string;
+  voiceId: string;
+}
+
+export interface PresetClassroomAgentInput {
+  id: string;
+  name: string;
+  role: string;
+  persona: string;
+  avatar?: string;
+  color?: string;
+  priority?: number;
+  voiceConfig?: ClassroomVoiceConfig;
+}
+
+type ResolvedClassroomAgent = AgentInfo & {
+  avatar?: string;
+  color?: string;
+  priority?: number;
+  voiceConfig?: ClassroomVoiceConfig;
+};
+
 export interface GenerateClassroomInput {
   requirement: string;
+  courseTagIds?: CourseTagId[];
   pdfContent?: { text: string; images: string[] };
   enableWebSearch?: boolean;
   enableImageGeneration?: boolean;
   enableVideoGeneration?: boolean;
   enableTTS?: boolean;
   agentMode?: 'default' | 'generate';
+  presetAgents?: PresetClassroomAgentInput[];
+  teacherVoiceConfig?: ClassroomVoiceConfig;
 }
 
 export type ClassroomGenerationStep =
@@ -59,8 +99,12 @@ export interface ClassroomGenerationProgress {
   message: string;
   scenesGenerated: number;
   totalScenes?: number;
+  /** Index of the scene currently being generated (0-based) */
+  currentSceneIndex?: number;
   /** Outline titles — sent once after outlines are generated */
   outlineTitles?: string[];
+  /** The classroom/stage ID — sent once stage is created */
+  stageId?: string;
 }
 
 export interface GenerateClassroomResult {
@@ -111,7 +155,7 @@ async function generateAgentProfiles(
   requirement: string,
   languageDirective: string,
   aiCall: AICallFn,
-): Promise<AgentInfo[]> {
+): Promise<ResolvedClassroomAgent[]> {
   const systemPrompt =
     'You are an expert instructional designer. Generate agent profiles for a multi-agent classroom simulation. Return ONLY valid JSON, no markdown or explanation.';
 
@@ -159,14 +203,65 @@ Return a JSON object with this exact structure:
   }));
 }
 
+function applyTeacherVoiceConfig(
+  agents: ResolvedClassroomAgent[],
+  teacherVoiceConfig?: ClassroomVoiceConfig,
+): ResolvedClassroomAgent[] {
+  if (!teacherVoiceConfig) return agents;
+  return agents.map((agent) =>
+    agent.role === 'teacher' ? { ...agent, voiceConfig: teacherVoiceConfig } : agent,
+  );
+}
+
+function normalizePresetAgents(
+  presetAgents: PresetClassroomAgentInput[] | undefined,
+): ResolvedClassroomAgent[] {
+  if (!presetAgents?.length) return [];
+  return presetAgents.map((agent, index) => ({
+    id: agent.id || `preset-server-${index}`,
+    name: agent.name,
+    role: agent.role,
+    persona: agent.persona,
+    avatar: agent.avatar,
+    color: agent.color,
+    priority: agent.priority,
+    ...(agent.voiceConfig ? { voiceConfig: agent.voiceConfig } : {}),
+  }));
+}
+
+function toStageAgentConfig(agent: ResolvedClassroomAgent, index: number) {
+  return {
+    id: agent.id,
+    name: agent.name,
+    role: agent.role,
+    persona: agent.persona || '',
+    avatar: agent.avatar || AGENT_DEFAULT_AVATARS[index % AGENT_DEFAULT_AVATARS.length],
+    color: agent.color || AGENT_COLOR_PALETTE[index % AGENT_COLOR_PALETTE.length],
+    priority: agent.priority ?? (agent.role === 'teacher' ? 10 : agent.role === 'assistant' ? 7 : 5),
+    ...(agent.voiceConfig ? { voiceConfig: agent.voiceConfig } : {}),
+  };
+}
+
 export async function generateClassroom(
   input: GenerateClassroomInput,
   options: {
     baseUrl: string;
+    jobId?: string;
     onProgress?: (progress: ClassroomGenerationProgress) => Promise<void> | void;
+    signal?: AbortSignal;
   },
 ): Promise<GenerateClassroomResult> {
-  const { requirement, pdfContent } = input;
+  const { requirement, pdfContent, courseTagIds } = input;
+
+  const checkAborted = async () => {
+    if (options.signal?.aborted) {
+      throw new Error('Generation cancelled by user');
+    }
+    // File-based cancel sentinel — survives HMR / server restarts
+    if (options.jobId && await hasCancelSentinel(options.jobId)) {
+      throw new Error('Generation cancelled by user');
+    }
+  };
 
   await options.onProgress?.({
     step: 'initializing',
@@ -192,6 +287,24 @@ export async function generateClassroom(
     );
   }
 
+  // ─── LLM call logging infrastructure ─────────────────────
+  // Buffer LLM logs until checkpoint is created, then flush + save directly.
+  let llmLogCheckpoint: GenerationCheckpoint | null = null;
+  const llmLogBuffer: Array<{ label: string; systemPrompt: string; userPrompt: string; response: string }> = [];
+  let currentLLMLabel = 'unknown';
+
+  function setLLMLabel(label: string) {
+    currentLLMLabel = label;
+  }
+
+  async function logLLMCall(systemPrompt: string, userPrompt: string, response: string) {
+    if (llmLogCheckpoint) {
+      await checkpointLLMCall(llmLogCheckpoint, currentLLMLabel, systemPrompt, userPrompt, response);
+    } else {
+      llmLogBuffer.push({ label: currentLLMLabel, systemPrompt, userPrompt, response });
+    }
+  }
+
   const aiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
     const result = await callLLM(
       {
@@ -204,10 +317,12 @@ export async function generateClassroom(
       },
       'generate-classroom',
     );
+    await logLLMCall(systemPrompt, userPrompt, result.text);
     return result.text;
   };
 
   const searchQueryAiCall: AICallFn = async (systemPrompt, userPrompt, _images) => {
+    setLLMLabel('search_query_rewrite');
     const result = await callLLM(
       {
         model: languageModel,
@@ -219,6 +334,7 @@ export async function generateClassroom(
       },
       'web-search-query-rewrite',
     );
+    await logLLMCall(systemPrompt, userPrompt, result.text);
     return result.text;
   };
 
@@ -227,136 +343,226 @@ export async function generateClassroom(
   };
   const pdfText = pdfContent?.text || undefined;
 
-  await options.onProgress?.({
-    step: 'researching',
-    progress: 10,
-    message: 'Researching topic',
-    scenesGenerated: 0,
-  });
+  // ─── Try to resume from existing checkpoint ────────────
+  let existingCheckpoint: GenerationCheckpoint | null = null;
+  if (options.jobId) {
+    existingCheckpoint = await readCheckpoint(options.jobId);
+  }
 
-  // Web search (optional, graceful degradation)
+  let outlines: SceneOutline[];
+  let languageDirective: string;
+  let agents: ResolvedClassroomAgent[];
+  let stageId: string;
+  let stage: Stage;
   let researchContext: string | undefined;
-  if (input.enableWebSearch) {
-    const tavilyKey = resolveWebSearchApiKey();
-    if (tavilyKey) {
-      try {
-        const searchQuery = await buildSearchQuery(requirement, pdfText, searchQueryAiCall);
+  let rawSearchResult: import('@/lib/types/web-search').WebSearchResult | undefined;
 
-        log.info('Running web search for classroom generation', {
-          hasPdfContext: searchQuery.hasPdfContext,
-          rawRequirementLength: searchQuery.rawRequirementLength,
-          rewriteAttempted: searchQuery.rewriteAttempted,
-          finalQueryLength: searchQuery.finalQueryLength,
-        });
+  if (existingCheckpoint) {
+    // ── Resume from checkpoint — skip outline/agent generation ──
+    log.info(`Resuming from checkpoint for job ${options.jobId}`);
+    outlines = existingCheckpoint.outlines;
+    languageDirective = existingCheckpoint.languageDirective;
+    agents = existingCheckpoint.agents;
+    stageId = existingCheckpoint.stageId;
+    stage = existingCheckpoint.stage;
+    researchContext = existingCheckpoint.researchContext;
 
-        const searchResult = await searchWithTavily({
-          query: searchQuery.query,
-          apiKey: tavilyKey,
-        });
-        researchContext = formatSearchResultsAsContext(searchResult);
-        if (researchContext) {
-          log.info(`Web search returned ${searchResult.sources.length} sources`);
-        }
-      } catch (e) {
-        log.warn('Web search failed, continuing without search context:', e);
-      }
-    } else {
-      log.warn('enableWebSearch is true but no Tavily API key configured, skipping web search');
-    }
-  }
+    const completedCount = existingCheckpoint.scenes.filter(
+      (s) => s.status === 'complete',
+    ).length;
 
-  await options.onProgress?.({
-    step: 'generating_outlines',
-    progress: 15,
-    message: 'Generating scene outlines',
-    scenesGenerated: 0,
-  });
-
-  const outlinesResult = await generateSceneOutlinesFromRequirements(
-    requirements,
-    pdfText,
-    undefined,
-    aiCall,
-    undefined,
-    {
-      imageGenerationEnabled: input.enableImageGeneration,
-      videoGenerationEnabled: input.enableVideoGeneration,
-      researchContext,
-      // NO teacherContext — agents haven't been generated yet
-    },
-  );
-
-  if (!outlinesResult.success || !outlinesResult.data) {
-    log.error('Failed to generate outlines:', outlinesResult.error);
-    throw new Error(outlinesResult.error || 'Failed to generate scene outlines');
-  }
-
-  const { languageDirective, outlines } = outlinesResult.data;
-  log.info(`Generated ${outlines.length} scene outlines (languageDirective: ${languageDirective})`);
-
-  await options.onProgress?.({
-    step: 'generating_outlines',
-    progress: 30,
-    message: `Generated ${outlines.length} scene outlines`,
-    scenesGenerated: 0,
-    totalScenes: outlines.length,
-    outlineTitles: outlines.map((o) => o.title),
-  });
-
-  // Resolve agents based on agentMode — now AFTER outlines so we can use languageDirective
-  let agents: AgentInfo[];
-  const agentMode = input.agentMode || 'default';
-  if (agentMode === 'generate') {
-    log.info('Generating custom agent profiles via LLM...');
-    try {
-      agents = await generateAgentProfiles(requirement, languageDirective, aiCall);
-      log.info(`Generated ${agents.length} agent profiles`);
-    } catch (e) {
-      log.warn('Agent profile generation failed, falling back to defaults:', e);
-      agents = getDefaultAgents();
-    }
+    await options.onProgress?.({
+      step: 'generating_scenes',
+      progress: 30,
+      message: `Resuming: ${completedCount}/${outlines.length} scenes already done`,
+      scenesGenerated: completedCount,
+      totalScenes: outlines.length,
+      outlineTitles: outlines.map((o) => o.title),
+      stageId,
+    });
   } else {
-    agents = getDefaultAgents();
-  }
+    // ── Fresh generation — run full pipeline ──
 
-  const stageId = nanoid(10);
-  const stage: Stage = {
-    id: stageId,
-    name: outlines[0]?.title || requirement.slice(0, 50),
-    description: undefined,
-    languageDirective,
-    style: 'interactive',
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    // For LLM-generated agents, embed full configs so the client can
-    // hydrate the agent registry without prior IndexedDB data.
-    // For default agents, just record IDs — the client already has them.
-    ...(agentMode === 'generate'
-      ? {
-          generatedAgentConfigs: agents.map((a, i) => ({
-            id: a.id,
-            name: a.name,
-            role: a.role,
-            persona: a.persona || '',
-            avatar: AGENT_DEFAULT_AVATARS[i % AGENT_DEFAULT_AVATARS.length],
-            color: AGENT_COLOR_PALETTE[i % AGENT_COLOR_PALETTE.length],
-            priority: a.role === 'teacher' ? 10 : a.role === 'assistant' ? 7 : 5,
-          })),
+    await options.onProgress?.({
+      step: 'researching',
+      progress: 10,
+      message: 'Researching topic',
+      scenesGenerated: 0,
+    });
+
+    // Web search (optional, graceful degradation)
+    if (input.enableWebSearch) {
+      const tavilyKey = resolveWebSearchApiKey();
+      if (tavilyKey) {
+        try {
+          const searchQuery = await buildSearchQuery(requirement, pdfText, searchQueryAiCall);
+
+          log.info('Running web search for classroom generation', {
+            hasPdfContext: searchQuery.hasPdfContext,
+            rawRequirementLength: searchQuery.rawRequirementLength,
+            rewriteAttempted: searchQuery.rewriteAttempted,
+            finalQueryLength: searchQuery.finalQueryLength,
+          });
+
+          const searchResult = await searchWithTavily({
+            query: searchQuery.query,
+            apiKey: tavilyKey,
+          });
+          rawSearchResult = searchResult;
+          researchContext = formatSearchResultsAsContext(searchResult);
+          if (researchContext) {
+            log.info(`Web search returned ${searchResult.sources.length} sources`);
+          }
+        } catch (e) {
+          log.warn('Web search failed, continuing without search context:', e);
         }
-      : {
-          agentIds: agents.map((a) => a.id),
-        }),
-  };
+      } else {
+        log.warn('enableWebSearch is true but no Tavily API key configured, skipping web search');
+      }
+    }
+
+    await options.onProgress?.({
+      step: 'generating_outlines',
+      progress: 15,
+      message: 'Generating scene outlines',
+      scenesGenerated: 0,
+    });
+
+    setLLMLabel('outline');
+    const outlinesResult = await generateSceneOutlinesFromRequirements(
+      requirements,
+      pdfText,
+      undefined,
+      aiCall,
+      undefined,
+      {
+        imageGenerationEnabled: input.enableImageGeneration,
+        videoGenerationEnabled: input.enableVideoGeneration,
+        researchContext,
+        // NO teacherContext — agents haven't been generated yet
+      },
+    );
+
+    if (!outlinesResult.success || !outlinesResult.data) {
+      log.error('Failed to generate outlines:', outlinesResult.error);
+      throw new Error(outlinesResult.error || 'Failed to generate scene outlines');
+    }
+
+    languageDirective = outlinesResult.data.languageDirective;
+    outlines = outlinesResult.data.outlines;
+    log.info(`Generated ${outlines.length} scene outlines (languageDirective: ${languageDirective})`);
+
+    await options.onProgress?.({
+      step: 'generating_outlines',
+      progress: 30,
+      message: `Generated ${outlines.length} scene outlines`,
+      scenesGenerated: 0,
+      totalScenes: outlines.length,
+      outlineTitles: outlines.map((o) => o.title),
+    });
+
+    // Resolve agents based on agentMode — now AFTER outlines so we can use languageDirective
+    const agentMode = input.agentMode || 'default';
+    if (agentMode === 'generate') {
+      log.info('Generating custom agent profiles via LLM...');
+      setLLMLabel('agent_profiles');
+      try {
+        agents = applyTeacherVoiceConfig(
+          await generateAgentProfiles(requirement, languageDirective, aiCall),
+          input.teacherVoiceConfig,
+        );
+        log.info(`Generated ${agents.length} agent profiles`);
+      } catch (e) {
+        log.warn('Agent profile generation failed, falling back to defaults:', e);
+        agents = applyTeacherVoiceConfig(
+          getDefaultAgents().map((agent) => ({ ...agent })),
+          input.teacherVoiceConfig,
+        );
+      }
+    } else if ((input.presetAgents?.length ?? 0) > 0) {
+      agents = applyTeacherVoiceConfig(
+        normalizePresetAgents(input.presetAgents),
+        input.teacherVoiceConfig,
+      );
+    } else {
+      agents = applyTeacherVoiceConfig(
+        getDefaultAgents().map((agent) => ({ ...agent })),
+        input.teacherVoiceConfig,
+      );
+    }
+
+    stageId = nanoid(10);
+    stage = {
+      id: stageId,
+      name: outlines[0]?.title || requirement.slice(0, 50),
+      description: undefined,
+      courseTagIds,
+      languageDirective,
+      style: 'interactive',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      agentIds: agents.map((a) => a.id),
+      ...((agentMode === 'generate' || (input.presetAgents?.length ?? 0) > 0)
+        ? {
+            generatedAgentConfigs: agents.map((agent, index) => toStageAgentConfig(agent, index)),
+          }
+        : {}),
+    };
+  }
 
   const store = createInMemoryStore(stage);
   const api = createStageAPI(store);
+
+  // ─── Create or load checkpoint ─────────────────────────
+  let checkpoint: GenerationCheckpoint | null = null;
+  if (options.jobId) {
+    checkpoint = await readCheckpoint(options.jobId);
+  }
+  if (!checkpoint && options.jobId) {
+    checkpoint = createCheckpoint(
+      options.jobId,
+      stageId,
+      stage,
+      outlines,
+      agents,
+      languageDirective,
+      researchContext,
+    );
+    // Save raw search results if available
+    if (rawSearchResult) {
+      checkpoint.rawSearchResult = rawSearchResult;
+    }
+    // Flush buffered LLM call logs
+    if (llmLogBuffer.length > 0) {
+      checkpoint.llmCallLogs = llmLogBuffer.map((entry) => ({
+        ...entry,
+        timestamp: new Date().toISOString(),
+      }));
+      llmLogBuffer.length = 0;
+    }
+    await writeCheckpoint(checkpoint);
+  }
+
+  // Wire LLM logging to checkpoint from this point on
+  if (checkpoint) {
+    llmLogCheckpoint = checkpoint;
+  }
 
   log.info('Stage 2: Generating scene content and actions...');
   let generatedScenes = 0;
 
   for (const [index, outline] of outlines.entries()) {
+    await checkAborted();
     const safeOutline = applyOutlineFallbacks(outline, true);
     const progressStart = 30 + Math.floor((index / Math.max(outlines.length, 1)) * 60);
+
+    // Check checkpoint — skip already-complete or skipped scenes
+    const sceneCP = checkpoint?.scenes[index];
+    if (sceneCP && (sceneCP.status === 'complete' || sceneCP.status === 'skipped')) {
+      if (sceneCP.status === 'complete') generatedScenes += 1;
+      log.info(`Skipping scene ${index + 1} (checkpoint: ${sceneCP.status})`);
+      continue;
+    }
 
     await options.onProgress?.({
       step: 'generating_scenes',
@@ -364,26 +570,56 @@ export async function generateClassroom(
       message: `Generating scene ${index + 1}/${outlines.length}: ${safeOutline.title}`,
       scenesGenerated: generatedScenes,
       totalScenes: outlines.length,
+      currentSceneIndex: index,
+      ...(index === 0 ? { stageId } : {}),
     });
 
-    const content = await generateSceneContent(safeOutline, aiCall, { agents, languageDirective });
+    // ── Step A: Generate content (or reuse from checkpoint) ──
+    let content = sceneCP?.status === 'content_done' || sceneCP?.status === 'actions_done'
+      ? (sceneCP.content as Awaited<ReturnType<typeof generateSceneContent>>)
+      : null;
+
     if (!content) {
-      log.warn(`Skipping scene "${safeOutline.title}" — content generation failed`);
-      continue;
+      setLLMLabel(`scene_${index + 1}_content`);
+      content = await generateSceneContent(safeOutline, aiCall, { agents, languageDirective });
+      if (!content) {
+        log.warn(`Skipping scene "${safeOutline.title}" — content generation failed`);
+        if (checkpoint) await checkpointSceneSkipped(checkpoint, index);
+        continue;
+      }
+      if (checkpoint) await checkpointSceneContent(checkpoint, index, content);
+    } else {
+      log.info(`Scene ${index + 1}: reusing content from checkpoint`);
     }
 
-    const actions = await generateSceneActions(safeOutline, content, aiCall, {
-      agents,
-      languageDirective,
-    });
-    log.info(`Scene "${safeOutline.title}": ${actions.length} actions`);
+    await checkAborted();
 
+    // ── Step B: Generate actions (or reuse from checkpoint) ──
+    let actions = sceneCP?.status === 'actions_done' ? sceneCP.actions! : null;
+
+    if (!actions) {
+      setLLMLabel(`scene_${index + 1}_actions`);
+      actions = await generateSceneActions(safeOutline, content, aiCall, {
+        agents,
+        languageDirective,
+      });
+      log.info(`Scene "${safeOutline.title}": ${actions.length} actions`);
+      if (checkpoint) await checkpointSceneActions(checkpoint, index, actions);
+    } else {
+      log.info(`Scene ${index + 1}: reusing actions from checkpoint`);
+    }
+
+    await checkAborted();
+
+    // ── Step C: Create scene ──
     const sceneId = createSceneWithActions(safeOutline, content, actions, api);
     if (!sceneId) {
       log.warn(`Skipping scene "${safeOutline.title}" — scene creation failed`);
+      if (checkpoint) await checkpointSceneSkipped(checkpoint, index);
       continue;
     }
 
+    if (checkpoint) await checkpointSceneComplete(checkpoint, index, sceneId);
     generatedScenes += 1;
     const progressEnd = 30 + Math.floor(((index + 1) / Math.max(outlines.length, 1)) * 60);
     await options.onProgress?.({
@@ -392,7 +628,18 @@ export async function generateClassroom(
       message: `Generated ${generatedScenes}/${outlines.length} scenes`,
       scenesGenerated: generatedScenes,
       totalScenes: outlines.length,
+      currentSceneIndex: index,
     });
+
+    // Incremental persistence — save after every scene so data is not lost on failure
+    try {
+      await persistClassroom(
+        { id: stageId, stage, scenes: store.getState().scenes },
+        options.baseUrl,
+      );
+    } catch (persistErr) {
+      log.warn(`Incremental persist after scene ${index + 1} failed:`, persistErr);
+    }
   }
 
   const scenes = store.getState().scenes;
@@ -401,6 +648,8 @@ export async function generateClassroom(
   if (scenes.length === 0) {
     throw new Error('No scenes were generated');
   }
+
+  await checkAborted();
 
   // Phase: Media generation (after all scenes generated)
   if (input.enableImageGeneration || input.enableVideoGeneration) {
@@ -421,6 +670,8 @@ export async function generateClassroom(
     }
   }
 
+  await checkAborted();
+
   // Phase: TTS generation
   if (input.enableTTS) {
     await options.onProgress?.({
@@ -432,7 +683,12 @@ export async function generateClassroom(
     });
 
     try {
-      await generateTTSForClassroom(scenes, stageId, options.baseUrl);
+      await generateTTSForClassroom(
+        scenes,
+        stageId,
+        options.baseUrl,
+        agents.find((agent) => agent.role === 'teacher')?.voiceConfig,
+      );
       log.info('TTS generation complete');
     } catch (err) {
       log.warn('TTS generation phase failed, continuing:', err);
@@ -465,6 +721,7 @@ export async function generateClassroom(
       avatar: a.avatar,
       color: a.color,
       priority: a.priority,
+      ...(a.voiceConfig ? { voiceConfig: a.voiceConfig } : {}),
     }));
     await writeClassroomManifest(stageId, stage, scenes, agentConfigs);
     log.info(`Manifest written for classroom ${stageId}`);

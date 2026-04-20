@@ -11,6 +11,8 @@ import {
   FileDown,
   Package,
   Archive,
+  Pencil,
+  Check,
 } from 'lucide-react';
 import { useI18n } from '@/lib/hooks/use-i18n';
 import { useTheme } from '@/lib/hooks/use-theme';
@@ -34,6 +36,42 @@ export function Header({ currentSceneTitle }: HeaderProps) {
   const router = useRouter();
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [themeOpen, setThemeOpen] = useState(false);
+
+  // Classroom name editing
+  const stageName = useStageStore((s) => s.stage?.name ?? '');
+  const stageId = useStageStore((s) => s.stage?.id);
+  const updateStageName = useStageStore((s) => s.updateStageName);
+  const saveToStorage = useStageStore((s) => s.saveToStorage);
+  const [editingName, setEditingName] = useState(false);
+  const [nameDraft, setNameDraft] = useState('');
+  const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const handleStartEdit = useCallback(() => {
+    setNameDraft(stageName);
+    setEditingName(true);
+    // Focus after state update renders the input
+    setTimeout(() => nameInputRef.current?.focus(), 0);
+  }, [stageName]);
+
+  const handleSaveName = useCallback(async () => {
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === stageName) {
+      setEditingName(false);
+      return;
+    }
+    updateStageName(trimmed);
+    setEditingName(false);
+    // Persist to IndexedDB
+    await saveToStorage();
+    // Persist to server (fire-and-forget)
+    if (stageId) {
+      fetch(`/api/classroom?id=${encodeURIComponent(stageId)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      }).catch(() => {});
+    }
+  }, [nameDraft, stageName, stageId, updateStageName, saveToStorage]);
 
   // Export
   const { exporting: isExporting, exportPPTX, exportResourcePack } = useExportPPTX();
@@ -85,9 +123,32 @@ export function Header({ currentSceneTitle }: HeaderProps) {
             <ArrowLeft className="w-5 h-5" />
           </button>
           <div className="flex flex-col min-w-0">
-            <span className="text-[10px] uppercase tracking-widest font-bold text-gray-400 dark:text-gray-500 mb-0.5">
-              {t('stage.currentScene')}
-            </span>
+            {/* Editable classroom name */}
+            <div className="flex items-center gap-1 mb-0.5 min-w-0">
+              {editingName ? (
+                <input
+                  ref={nameInputRef}
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  onBlur={handleSaveName}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') handleSaveName();
+                    if (e.key === 'Escape') setEditingName(false);
+                  }}
+                  className="text-[11px] font-semibold tracking-wide text-gray-600 dark:text-gray-400 bg-transparent border-b border-primary/40 outline-none px-0 py-0 min-w-0 max-w-[200px]"
+                />
+              ) : (
+                <button
+                  onClick={handleStartEdit}
+                  className="group flex items-center gap-1 text-[11px] font-semibold tracking-wide text-gray-500 dark:text-gray-400 hover:text-gray-700 dark:hover:text-gray-300 transition-colors truncate max-w-[200px]"
+                  title="点击编辑课堂名称"
+                >
+                  <span className="truncate">{stageName || '未命名课堂'}</span>
+                  <Pencil className="w-2.5 h-2.5 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                </button>
+              )}
+            </div>
+            {/* Current scene title */}
             <h1
               className="text-xl font-bold text-gray-800 dark:text-gray-200 tracking-tight truncate"
               suppressHydrationWarning

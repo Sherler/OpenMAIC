@@ -2,6 +2,8 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import type { NextRequest } from 'next/server';
 import type { Scene, Stage } from '@/lib/types/stage';
+import type { CourseTagDefinition } from '@/lib/constants/course-tags';
+import { resolveCourseTags } from '@/lib/server/course-tags';
 
 export const CLASSROOMS_DIR = path.join(process.cwd(), 'data', 'classrooms');
 export const CLASSROOM_JOBS_DIR = path.join(process.cwd(), 'data', 'classroom-jobs');
@@ -16,6 +18,40 @@ export async function ensureClassroomsDir() {
 
 export async function ensureClassroomJobsDir() {
   await ensureDir(CLASSROOM_JOBS_DIR);
+}
+
+// ─── Cancel sentinel (file-based, survives HMR / server restarts) ───
+
+function cancelSentinelPath(jobId: string) {
+  return path.join(CLASSROOM_JOBS_DIR, `${jobId}.cancel`);
+}
+
+/** Write a cancel sentinel so the pipeline can detect cancellation even without in-memory state. */
+export async function writeCancelSentinel(jobId: string): Promise<void> {
+  try {
+    await fs.writeFile(cancelSentinelPath(jobId), new Date().toISOString(), 'utf-8');
+  } catch {
+    // best-effort
+  }
+}
+
+/** Remove cancel sentinel (called from finally). */
+export async function removeCancelSentinel(jobId: string): Promise<void> {
+  try {
+    await fs.unlink(cancelSentinelPath(jobId));
+  } catch {
+    // file may not exist
+  }
+}
+
+/** Check if a cancel sentinel file exists for a job. */
+export async function hasCancelSentinel(jobId: string): Promise<boolean> {
+  try {
+    await fs.access(cancelSentinelPath(jobId));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 export async function writeJsonFileAtomic(filePath: string, data: unknown) {
@@ -87,14 +123,20 @@ export interface ClassroomListItem {
   id: string;
   name: string;
   description?: string;
+  courseTags: CourseTagDefinition[];
   createdAt: string;
   hasManifest: boolean;
 }
 
-export async function listClassrooms(): Promise<ClassroomListItem[]> {
+export async function listClassrooms(options?: {
+  tagIds?: string[];
+  match?: 'any' | 'all';
+}): Promise<ClassroomListItem[]> {
   await ensureClassroomsDir();
   const entries = await fs.readdir(CLASSROOMS_DIR, { withFileTypes: true });
   const items: ClassroomListItem[] = [];
+  const filterTagIds = options?.tagIds || [];
+  const matchMode = options?.match || 'any';
 
   for (const entry of entries) {
     // Match {id}.json files at top level
@@ -116,10 +158,23 @@ export async function listClassrooms(): Promise<ClassroomListItem[]> {
           // no manifest
         }
 
+        const courseTags = await resolveCourseTags(data.stage.courseTagIds);
+        if (filterTagIds.length > 0) {
+          const classroomTagIds = new Set(courseTags.map((tag) => tag.id));
+          const matched =
+            matchMode === 'all'
+              ? filterTagIds.every((tagId) => classroomTagIds.has(tagId))
+              : filterTagIds.some((tagId) => classroomTagIds.has(tagId));
+          if (!matched) {
+            continue;
+          }
+        }
+
         items.push({
           id: data.id,
           name: data.stage.name,
           description: data.stage.description,
+          courseTags,
           createdAt: data.createdAt,
           hasManifest,
         });

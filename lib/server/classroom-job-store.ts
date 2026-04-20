@@ -11,6 +11,7 @@ import {
   ensureClassroomJobsDir,
   writeJsonFileAtomic,
 } from '@/lib/server/classroom-storage';
+import type { CourseTagId } from '@/lib/constants/course-tags';
 
 export type ClassroomGenerationJobStatus = 'queued' | 'running' | 'succeeded' | 'failed';
 
@@ -26,14 +27,21 @@ export interface ClassroomGenerationJob {
   completedAt?: string;
   inputSummary: {
     requirementPreview: string;
+    courseTagIds?: CourseTagId[];
     hasPdf: boolean;
     pdfTextLength: number;
     pdfImageCount: number;
   };
+  /** Full input preserved for retry */
+  input?: GenerateClassroomInput;
+  /** The classroom/stage ID being generated (set once generation starts) */
+  stageId?: string;
   scenesGenerated: number;
   totalScenes?: number;
   /** Scene outline titles, populated after outline generation */
   outlineTitles?: string[];
+  /** 0-based index of the scene currently being generated */
+  currentSceneIndex?: number;
   result?: {
     classroomId: string;
     url: string;
@@ -50,9 +58,66 @@ function buildInputSummary(input: GenerateClassroomInput): ClassroomGenerationJo
   return {
     requirementPreview:
       input.requirement.length > 200 ? `${input.requirement.slice(0, 197)}...` : input.requirement,
+    courseTagIds: input.courseTagIds,
     hasPdf: !!input.pdfContent,
     pdfTextLength: input.pdfContent?.text.length || 0,
     pdfImageCount: input.pdfContent?.images.length || 0,
+  };
+}
+
+function normalizeCourseTagIds(value: unknown): CourseTagId[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const ids = value.filter((item): item is CourseTagId => typeof item === 'string');
+  return ids.length > 0 ? Array.from(new Set(ids)) : undefined;
+}
+
+function normalizeInputSummary(
+  inputSummary: ClassroomGenerationJob['inputSummary'] | undefined,
+  input?: GenerateClassroomInput,
+): ClassroomGenerationJob['inputSummary'] {
+  const legacySummary = inputSummary as ClassroomGenerationJob['inputSummary'] & {
+    courseTagIds?: CourseTagId[];
+    courseTag?: string;
+  };
+  const legacyInput = (input || {}) as GenerateClassroomInput & {
+    courseTagIds?: CourseTagId[];
+    courseTag?: string;
+  };
+  const normalizedCourseTagIds =
+    normalizeCourseTagIds(legacySummary?.courseTagIds) ||
+    normalizeCourseTagIds(legacyInput?.courseTagIds) ||
+    (typeof legacySummary?.courseTag === 'string'
+      ? [legacySummary.courseTag]
+      : typeof legacyInput?.courseTag === 'string'
+        ? [legacyInput.courseTag]
+        : undefined);
+
+  if (inputSummary) {
+    return {
+      ...inputSummary,
+      ...(normalizedCourseTagIds ? { courseTagIds: normalizedCourseTagIds } : {}),
+    };
+  }
+
+  if (input) {
+    return buildInputSummary(input);
+  }
+
+  return {
+    requirementPreview: '',
+    hasPdf: false,
+    pdfTextLength: 0,
+    pdfImageCount: 0,
+  };
+}
+
+function normalizeJob(job: ClassroomGenerationJob): ClassroomGenerationJob {
+  return {
+    ...job,
+    inputSummary: normalizeInputSummary(job.inputSummary, job.input),
   };
 }
 
@@ -113,6 +178,7 @@ export async function createClassroomGenerationJob(
     createdAt: now,
     updatedAt: now,
     inputSummary: buildInputSummary(input),
+    input,
     scenesGenerated: 0,
   };
 
@@ -126,7 +192,7 @@ export async function readClassroomGenerationJob(
 ): Promise<ClassroomGenerationJob | null> {
   try {
     const content = await fs.readFile(jobFilePath(jobId), 'utf-8');
-    const job = JSON.parse(content) as ClassroomGenerationJob;
+    const job = normalizeJob(JSON.parse(content) as ClassroomGenerationJob);
     return markStaleIfNeeded(job);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
@@ -190,9 +256,13 @@ export async function updateClassroomGenerationJobProgress(
     message: progress.message,
     scenesGenerated: progress.scenesGenerated,
     totalScenes: progress.totalScenes,
+    currentSceneIndex: progress.currentSceneIndex,
   };
   if (progress.outlineTitles) {
     patch.outlineTitles = progress.outlineTitles;
+  }
+  if (progress.stageId) {
+    patch.stageId = progress.stageId;
   }
   return updateClassroomGenerationJob(jobId, patch);
 }
@@ -227,4 +297,25 @@ export async function markClassroomGenerationJobFailed(
     completedAt: new Date().toISOString(),
     error,
   });
+}
+
+/** List all generation jobs, newest first. */
+export async function listClassroomGenerationJobs(): Promise<ClassroomGenerationJob[]> {
+  await ensureClassroomJobsDir();
+  const entries = await fs.readdir(CLASSROOM_JOBS_DIR, { withFileTypes: true });
+  const jobs: ClassroomGenerationJob[] = [];
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith('.json') || entry.name.includes('.checkpoint.')) continue;
+    try {
+      const content = await fs.readFile(path.join(CLASSROOM_JOBS_DIR, entry.name), 'utf-8');
+      const job = markStaleIfNeeded(normalizeJob(JSON.parse(content) as ClassroomGenerationJob));
+      jobs.push(job);
+    } catch {
+      // skip malformed files
+    }
+  }
+
+  jobs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+  return jobs;
 }

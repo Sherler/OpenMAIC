@@ -205,6 +205,7 @@ export async function generateTTSForClassroom(
   scenes: Scene[],
   classroomId: string,
   baseUrl: string,
+  teacherVoiceConfig?: { providerId: string; modelId?: string; voiceId: string },
 ): Promise<void> {
   const audioDir = path.join(CLASSROOMS_DIR, classroomId, 'audio');
   await ensureDir(audioDir);
@@ -218,16 +219,39 @@ export async function generateTTSForClassroom(
     return;
   }
 
-  const providerId = ttsProviderIds[0] as TTSProviderId;
-  const apiKey = resolveTTSApiKey(providerId);
-  if (!apiKey) {
-    log.warn(`No API key for TTS provider "${providerId}", skipping TTS generation`);
+  const preferredProviderId =
+    teacherVoiceConfig?.providerId && teacherVoiceConfig.providerId !== 'browser-native-tts'
+      ? (teacherVoiceConfig.providerId as TTSProviderId)
+      : undefined;
+  const providerCandidates = [
+    ...(preferredProviderId ? [preferredProviderId] : []),
+    ...ttsProviderIds
+      .map((id) => id as TTSProviderId)
+      .filter((id) => id !== preferredProviderId),
+  ];
+
+  let providerId: TTSProviderId | undefined;
+  let apiKey: string | undefined;
+  for (const candidate of providerCandidates) {
+    const candidateApiKey = resolveTTSApiKey(candidate);
+    if (candidateApiKey) {
+      providerId = candidate;
+      apiKey = candidateApiKey;
+      break;
+    }
+  }
+
+  if (!providerId || !apiKey) {
+    log.warn('No API key for any server TTS provider, skipping TTS generation');
     return;
   }
   const ttsBaseUrl =
     resolveTTSBaseUrl(providerId) ||
     TTS_PROVIDERS[providerId as keyof typeof TTS_PROVIDERS]?.defaultBaseUrl;
-  const voice = DEFAULT_TTS_VOICES[providerId as keyof typeof DEFAULT_TTS_VOICES] || 'default';
+  const voice =
+    providerId === preferredProviderId && teacherVoiceConfig?.voiceId
+      ? teacherVoiceConfig.voiceId
+      : DEFAULT_TTS_VOICES[providerId as keyof typeof DEFAULT_TTS_VOICES] || 'default';
   const format =
     TTS_PROVIDERS[providerId as keyof typeof TTS_PROVIDERS]?.supportedFormats?.[0] || 'mp3';
 
@@ -247,7 +271,10 @@ export async function generateTTSForClassroom(
         const result = await generateTTS(
           {
             providerId,
-            modelId: DEFAULT_TTS_MODELS[providerId as keyof typeof DEFAULT_TTS_MODELS] || '',
+            modelId:
+              (providerId === preferredProviderId ? teacherVoiceConfig?.modelId : undefined) ||
+              DEFAULT_TTS_MODELS[providerId as keyof typeof DEFAULT_TTS_MODELS] ||
+              '',
             apiKey,
             baseUrl: ttsBaseUrl,
             voice,

@@ -84,6 +84,7 @@ export async function writeClassroomManifest(
     avatar: string;
     color: string;
     priority: number;
+    voiceConfig?: { providerId: string; modelId?: string; voiceId: string };
   }>,
 ): Promise<void> {
   const classroomDir = path.join(CLASSROOMS_DIR, classroomId);
@@ -115,6 +116,7 @@ export async function writeClassroomManifest(
         avatar: a.avatar,
         color: a.color,
         priority: a.priority,
+        ...(a.voiceConfig ? { voiceConfig: a.voiceConfig } : {}),
       });
     }
   } else if (stage.generatedAgentConfigs?.length) {
@@ -126,6 +128,7 @@ export async function writeClassroomManifest(
         avatar: a.avatar,
         color: a.color,
         priority: a.priority,
+        ...(a.voiceConfig ? { voiceConfig: a.voiceConfig } : {}),
       });
     }
   }

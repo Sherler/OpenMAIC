@@ -24,6 +24,11 @@ export interface ClassroomListItem {
   id: string;
   name: string;
   description?: string;
+  courseTags?: Array<{
+    id: string;
+    tag_name: string;
+    manager_ids: string[];
+  }>;
   createdAt: string;
   hasManifest: boolean;
 }
@@ -43,6 +48,7 @@ export interface ClassroomStage {
   id: string;
   name: string;
   description?: string;
+  courseTagIds?: string[];
   languageDirective?: string;
   style?: string;
   createdAt: number;

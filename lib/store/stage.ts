@@ -83,6 +83,7 @@ interface StageState {
   addFailedOutline: (outline: SceneOutline) => void;
   clearFailedOutlines: () => void;
   retryFailedOutline: (outlineId: string) => void;
+  updateStageName: (name: string) => void;
 
   // Getters
   getCurrentScene: () => Scene | null;
@@ -229,6 +230,12 @@ const useStageStoreBase = create<StageState>()((set, get) => ({
     set({
       failedOutlines: get().failedOutlines.filter((o) => o.id !== outlineId),
     });
+  },
+
+  updateStageName: (name) => {
+    const { stage } = get();
+    if (!stage) return;
+    set({ stage: { ...stage, name, updatedAt: Date.now() } });
   },
 
   // Getters
