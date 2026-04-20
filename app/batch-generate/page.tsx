@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { AgentBar } from '@/components/agent/agent-bar';
@@ -24,6 +24,11 @@ import {
   Volume2,
   Bot,
   Eye,
+  Sparkles,
+  ArrowRight,
+  LibraryBig,
+  Blocks,
+  Mic2,
 } from 'lucide-react';
 
 // ─── Types ─────────────────────────────────────────────────
@@ -71,6 +76,8 @@ interface BatchPresetAgent {
 
 export default function BatchGeneratePage() {
   const router = useRouter();
+  const formRef = useRef<HTMLDivElement>(null);
+  const historyRef = useRef<HTMLDivElement>(null);
   const selectedAgentIds = useSettingsStore((s) => s.selectedAgentIds);
   const settingsAgentMode = useSettingsStore((s) => s.agentMode);
   const setSettingsAgentMode = useSettingsStore((s) => s.setAgentMode);
@@ -221,26 +228,94 @@ export default function BatchGeneratePage() {
     );
   }, []);
 
+  const scrollToSection = useCallback((target: 'form' | 'history') => {
+    const element = target === 'form' ? formRef.current : historyRef.current;
+    element?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }, []);
+
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen bg-[linear-gradient(180deg,#f7f3ea_0%,#fcfbf7_24%,#ffffff_58%)]">
       {/* Header */}
-      <header className="border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60 sticky top-0 z-10">
-        <div className="max-w-3xl mx-auto flex items-center gap-3 px-4 h-14">
+      <header className="border-b border-stone-200/70 bg-white/88 backdrop-blur supports-[backdrop-filter]:bg-white/72 sticky top-0 z-10">
+        <div className="max-w-5xl mx-auto flex items-center gap-3 px-4 h-14">
           <Link
             href="/"
-            className="p-1.5 rounded-lg hover:bg-muted text-muted-foreground"
+            className="p-1.5 rounded-lg hover:bg-stone-100 text-muted-foreground"
           >
             <ArrowLeft className="w-4 h-4" />
           </Link>
-          <h1 className="text-base font-semibold">服务端批量生成</h1>
+          <div className="flex items-center gap-3 min-w-0">
+            <h1 className="text-base font-semibold tracking-[0.18em] font-serif">鸿儒</h1>
+            <span className="hidden sm:inline-flex items-center rounded-full border border-stone-200 bg-stone-50 px-2.5 py-0.5 text-[11px] text-stone-600">
+              课堂批量生成入口
+            </span>
+          </div>
         </div>
       </header>
 
-      <main className="max-w-3xl mx-auto px-4 py-8 space-y-6">
+      <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        <section className="relative overflow-hidden rounded-[32px] border border-stone-200/80 bg-[radial-gradient(circle_at_top_left,rgba(181,160,112,0.2),transparent_34%),linear-gradient(135deg,rgba(255,251,240,0.96),rgba(255,255,255,0.98))] px-6 py-8 shadow-[0_30px_80px_-48px_rgba(87,67,34,0.45)] sm:px-8 sm:py-10">
+          <div className="absolute -right-14 top-8 h-40 w-40 rounded-full bg-amber-200/35 blur-3xl" />
+          <div className="absolute left-10 bottom-0 h-24 w-24 rounded-full bg-stone-300/25 blur-2xl" />
+          <div className="relative grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(280px,0.8fr)] lg:items-end">
+            <div className="space-y-5">
+              <div className="inline-flex items-center gap-2 rounded-full border border-stone-300/70 bg-white/70 px-3 py-1 text-xs text-stone-700 shadow-sm">
+                <Sparkles className="h-3.5 w-3.5 text-amber-600" />
+                鸿儒 AI 课堂工作台
+              </div>
+              <div className="space-y-3">
+                <h2 className="text-4xl font-serif tracking-[0.18em] text-stone-900 sm:text-5xl">
+                  鸿儒
+                </h2>
+                <p className="max-w-2xl text-sm leading-7 text-stone-700 sm:text-base">
+                  从一句课堂需求出发，快速生成带角色、图片、语音与场景结构的完整教学内容。
+                  当前页面已经是欢迎入口，你可以直接开始批量生成，也可以先查看历史课堂继续迭代。
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  onClick={() => scrollToSection('form')}
+                  className="h-11 rounded-full bg-stone-900 px-5 text-white hover:bg-stone-800"
+                >
+                  进入鸿儒
+                  <ArrowRight className="ml-2 h-4 w-4" />
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => scrollToSection('history')}
+                  className="h-11 rounded-full border-stone-300 bg-white/75 px-5 text-stone-700 hover:bg-stone-50"
+                >
+                  查看生成历史
+                </Button>
+              </div>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-3 lg:grid-cols-1">
+              <HeroFeatureCard
+                icon={<LibraryBig className="h-4 w-4" />}
+                title="结构化课堂"
+                description="一条需求自动拆分成教学场景与课堂节奏。"
+              />
+              <HeroFeatureCard
+                icon={<Blocks className="h-4 w-4" />}
+                title="角色协同"
+                description="预设角色与 AI 自动生成两种模式自由切换。"
+              />
+              <HeroFeatureCard
+                icon={<Mic2 className="h-4 w-4" />}
+                title="教师音色"
+                description="直接选择教师声音，并带入服务端批量生成流程。"
+              />
+            </div>
+          </div>
+        </section>
+
         {/* ─── Form ─────────────────────────────────────── */}
-        <Card>
+        <div ref={formRef}>
+        <Card className="border-stone-200/80 bg-white/88 shadow-[0_22px_65px_-50px_rgba(56,42,16,0.45)] backdrop-blur">
           <CardHeader>
-            <CardTitle className="text-lg">课堂需求</CardTitle>
+            <CardTitle className="text-lg text-stone-900">课堂需求</CardTitle>
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="space-y-2">
@@ -326,11 +401,13 @@ export default function BatchGeneratePage() {
             )}
           </CardContent>
         </Card>
+        </div>
 
         {/* ─── Job History ──────────────────────────────── */}
-        <Card>
+        <div ref={historyRef}>
+        <Card className="border-stone-200/80 bg-white/88 shadow-[0_22px_65px_-50px_rgba(56,42,16,0.45)] backdrop-blur">
           <CardHeader className="pb-3">
-            <CardTitle className="text-base">生成历史</CardTitle>
+            <CardTitle className="text-base text-stone-900">生成历史</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {historyLoading && (
@@ -407,7 +484,28 @@ export default function BatchGeneratePage() {
             })}
           </CardContent>
         </Card>
+        </div>
       </main>
+    </div>
+  );
+}
+
+function HeroFeatureCard({
+  icon,
+  title,
+  description,
+}: {
+  icon: React.ReactNode;
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-stone-200/80 bg-white/75 p-4 shadow-sm backdrop-blur-sm">
+      <div className="mb-3 inline-flex h-8 w-8 items-center justify-center rounded-full bg-amber-100 text-amber-700">
+        {icon}
+      </div>
+      <h3 className="text-sm font-semibold text-stone-900">{title}</h3>
+      <p className="mt-1 text-xs leading-6 text-stone-600">{description}</p>
     </div>
   );
 }
